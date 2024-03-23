@@ -52,7 +52,7 @@ def main():
         torch.set_printoptions(10)
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
-        
+
     os.environ['PYTHONHASHSEED'] = str(args.seed)
     time_str = str(datetime.datetime.now().strftime('-%Y%m%d%H%M%S'))
     if args.msg is None:
@@ -99,21 +99,24 @@ def main():
     best_test_loss = float("inf")
     best_train_loss = float("inf")
     start_epoch = 0
-    
+
     save_args(args)
     logger = Logger(os.path.join(args.ckpt_dir, 'log.txt'), title="ModelNet" + args.model)
     logger.set_names(["Epoch-Num", 'Learning-Rate',
-                        'Train-acc',
-                        'Valid-acc'])
+                      'Train-acc',
+                      'Valid-acc'])
 
     printf('==> Preparing data..')
-    train_loader = DataLoader(ModelNet40(partition='train', num_points=args.num_points, type='pn'), num_workers=args.workers,
+    train_loader = DataLoader(ModelNet40(partition='train', num_points=args.num_points, type='pn'),
+                              num_workers=args.workers,
                               batch_size=args.batch_size, shuffle=True, drop_last=True)
-    test_loader = DataLoader(ModelNet40(partition='test', num_points=args.num_points, type='pn'), num_workers=args.workers,
+    test_loader = DataLoader(ModelNet40(partition='test', num_points=args.num_points, type='pn'),
+                             num_workers=args.workers,
                              batch_size=64, shuffle=False, drop_last=False)
 
     if args.optim == "sgd":
-        optimizer = torch.optim.SGD(net.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=args.weight_decay)
+        optimizer = torch.optim.SGD(net.parameters(), lr=args.learning_rate, momentum=0.9,
+                                    weight_decay=args.weight_decay)
 
     elif args.optim == "adamw":
         optimizer = torch.optim.AdamW(net.parameters(), lr=args.learning_rate, eps=1e-4)
@@ -127,7 +130,7 @@ def main():
         printf('Epoch(%d/%s) Learning Rate %s:' % (epoch + 1, args.epoch, optimizer.param_groups[0]['lr']))
 
         train_out = train(net, train_loader, optimizer, criterion, args.eps, device)
-        
+
         test_out = validate(net, test_loader, criterion, args.eps, device)
 
         scheduler.step()
@@ -246,7 +249,6 @@ def validate(net, testloader, criterion, eps, device):
         "acc_avg": float("%.3f" % (100. * metrics.balanced_accuracy_score(test_true, test_pred))),
         "time": time_cost
     }
-
 
 
 if __name__ == '__main__':

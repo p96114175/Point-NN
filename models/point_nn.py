@@ -4,8 +4,7 @@ import torch.nn as nn
 from pointnet2_ops import pointnet2_utils
 
 from .model_utils import *
-
-
+from .my_feature.feature_extractor import DeepGCN, Options
 
 # FPS + k-NN
 class FPS_kNN(nn.Module):
@@ -18,7 +17,7 @@ class FPS_kNN(nn.Module):
         B, N, _ = xyz.shape
 
         # FPS
-        fps_idx = pointnet2_utils.furthest_point_sample(xyz, self.group_num).long() 
+        fps_idx = pointnet2_utils.furthest_point_sample(xyz.contiguous(), self.group_num).long()
         lc_xyz = index_points(xyz, fps_idx)
         lc_x = index_points(x, fps_idx)
 
@@ -37,7 +36,6 @@ class LGA(nn.Module):
         self.geo_extract = PosE_Geo(3, out_dim, alpha, beta)
 
     def forward(self, lc_xyz, lc_x, knn_xyz, knn_x):
-
         # Normalize x (features) and xyz (coordinates)
         mean_x = lc_x.unsqueeze(dim=-2)
         std_x = torch.std(knn_x - mean_x)
@@ -65,8 +63,8 @@ class Pooling(nn.Module):
     def __init__(self, out_dim):
         super().__init__()
         self.out_transform = nn.Sequential(
-                nn.BatchNorm1d(out_dim),
-                nn.GELU())
+            nn.BatchNorm1d(out_dim),
+            nn.GELU())
 
     def forward(self, knn_x_w):
         # Feature Aggregation (Pooling)
@@ -75,7 +73,7 @@ class Pooling(nn.Module):
         return lc_x
 
 
-# PosE for Raw-point Embedding 
+# PosE for Raw-point Embedding
 class PosE_Initial(nn.Module):
     def __init__(self, in_dim, out_dim, alpha, beta):
         super().__init__()
@@ -84,10 +82,10 @@ class PosE_Initial(nn.Module):
         self.alpha, self.beta = alpha, beta
 
     def forward(self, xyz):
-        B, _, N = xyz.shape    
+        B, _, N = xyz.shape
         feat_dim = self.out_dim // (self.in_dim * 2)
-        
-        feat_range = torch.arange(feat_dim).float().cuda()     
+
+        feat_range = torch.arange(feat_dim).float().cuda()
         dim_embed = torch.pow(self.alpha, feat_range / feat_dim)
         div_embed = torch.div(self.beta * xyz.unsqueeze(-1), dim_embed)
 
@@ -95,7 +93,7 @@ class PosE_Initial(nn.Module):
         cos_embed = torch.cos(div_embed)
         position_embed = torch.stack([sin_embed, cos_embed], dim=4).flatten(3)
         position_embed = position_embed.permute(0, 1, 3, 2).reshape(B, self.out_dim, N)
-        
+
         return position_embed
 
 
@@ -106,12 +104,12 @@ class PosE_Geo(nn.Module):
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.alpha, self.beta = alpha, beta
-        
+
     def forward(self, knn_xyz, knn_x):
         B, _, G, K = knn_xyz.shape
         feat_dim = self.out_dim // (self.in_dim * 2)
 
-        feat_range = torch.arange(feat_dim).float().cuda()     
+        feat_range = torch.arange(feat_dim).float().cuda()
         dim_embed = torch.pow(self.alpha, feat_range / feat_dim)
         div_embed = torch.div(self.beta * knn_xyz.unsqueeze(-1), dim_embed)
 
@@ -128,7 +126,7 @@ class PosE_Geo(nn.Module):
 
 
 # Non-Parametric Encoder
-class EncNP(nn.Module):  
+class EncNP(nn.Module):
     def __init__(self, input_points, num_stages, embed_dim, k_neighbors, alpha, beta):
         super().__init__()
         self.input_points = input_points
@@ -139,10 +137,10 @@ class EncNP(nn.Module):
         # Raw-point Embedding
         self.raw_point_embed = PosE_Initial(3, self.embed_dim, self.alpha, self.beta)
 
-        self.FPS_kNN_list = nn.ModuleList() # FPS, kNN
-        self.LGA_list = nn.ModuleList() # Local Geometry Aggregation
-        self.Pooling_list = nn.ModuleList() # Pooling
-        
+        self.FPS_kNN_list = nn.ModuleList()  # FPS, kNN
+        self.LGA_list = nn.ModuleList()  # Local Geometry Aggregation
+        self.Pooling_list = nn.ModuleList()  # Pooling
+
         out_dim = self.embed_dim
         group_num = self.input_points
 
@@ -153,7 +151,6 @@ class EncNP(nn.Module):
             self.FPS_kNN_list.append(FPS_kNN(group_num, k_neighbors))
             self.LGA_list.append(LGA(out_dim, self.alpha, self.beta))
             self.Pooling_list.append(Pooling(out_dim))
-
 
     def forward(self, xyz, x):
 
@@ -172,6 +169,60 @@ class EncNP(nn.Module):
         # Global Pooling
         x = x.max(-1)[0] + x.mean(-1)
         return x
+class data_augmentation_v2(nn.Module):
+    def __init__(self, rotation_range=360, scale_range=(0.9, 1.1)):
+        super().__init__()
+        self.rotation_range = rotation_range
+        self.scale_range = scale_range
+
+    def euler2mat(self, angle):
+        if len(angle.size()) == 1:
+            x, y, z = angle[0], angle[1], angle[2]
+            _dim = 0
+            _view = [3, 3]
+        elif len(angle.size()) == 2:
+            b, _ = angle.size()
+            x, y, z = angle[:, 0], angle[:, 1], angle[:, 2]
+            _dim = 1
+            _view = [b, 3, 3]
+        else:
+            assert False
+
+        cosz = torch.cos(z)
+        sinz = torch.sin(z)
+        zero = z.detach() * 0
+        one = zero.detach() + 1
+        zmat = torch.stack([cosz, -sinz, zero,
+                            sinz, cosz, zero,
+                            zero, zero, one], dim=_dim).reshape(_view)
+
+        cosy = torch.cos(y)
+        siny = torch.sin(y)
+        ymat = torch.stack([cosy, zero, siny,
+                            zero, one, zero,
+                            -siny, zero, cosy], dim=_dim).reshape(_view)
+
+        cosx = torch.cos(x)
+        sinx = torch.sin(x)
+        xmat = torch.stack([one, zero, zero,
+                            zero, cosx, -sinx,
+                            zero, sinx, cosx], dim=_dim).reshape(_view)
+
+        rot_mat = xmat @ ymat @ zmat
+        return rot_mat
+
+    def forward(self, x):
+        """ x 的 tensor(batch_size, 3, num_points) """
+        # 隨機旋轉
+        # theta = torch.rand(x.size(0), 3) * 2 * np.pi * self.rotation_range / 360
+        # rotation_matrix = self.euler2mat(theta)
+        # x_rotated = torch.bmm(rotation_matrix.to(x.device), x)
+
+        # 隨機縮放
+        scale = torch.rand(x.size(0)) * (self.scale_range[1] - self.scale_range[0]) + self.scale_range[0]
+        x_scaled = x * scale.view(-1, 1, 1).cuda()
+
+        return x_scaled
 
 
 # Non-Parametric Network
@@ -180,13 +231,36 @@ class Point_NN(nn.Module):
         super().__init__()
         # Non-Parametric Encoder
         self.EncNP = EncNP(input_points, num_stages, embed_dim, k_neighbors, alpha, beta)
+        """ experiment """
+        opt = Options()
+        self.extractor = DeepGCN(opt).cuda()
+        # 加载预训练模型的参数字典
+        pretrained_dict = torch.load('models/ModelNet40-dense-edge-n14-C64-k9-drop0.5-lr0.001_B32_best_model.pth')
 
+        # 获取当前模型的参数字典
+        model_dict = self.extractor.state_dict()
 
+        # 从预训练模型的参数字典中删除不匹配的键（例如，如果模型结构不同）
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+
+        # 更新当前模型的参数字典
+        model_dict.update(pretrained_dict)
+
+        # 将更新后的参数字典加载到模型中
+        self.extractor.load_state_dict(model_dict)
+
+        # 确保模型处于评估模式
+        self.extractor.eval()
     def forward(self, x):
         # xyz: point coordinates
         # x: point features
         xyz = x.permute(0, 2, 1)
 
-        # Non-Parametric Encoder
-        x = self.EncNP(xyz, x)
+        # Parametric Encoder
+        # x = self.EncP(xyz, x)
+
+        x = self.extractor(x)
+
+        # Classifier
+        # x = self.classifier(x)
         return x
